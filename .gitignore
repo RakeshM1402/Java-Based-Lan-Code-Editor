@@ -1,0 +1,26 @@
+# Compiled class files
+target/
+*.class
+
+# JAR file (keep for releases)
+# CollaborativeEditor.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Database
+*.db
+*.db-journal
+
+# Maven (not using)
+# pom.xml
+# src/
