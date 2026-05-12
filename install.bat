@@ -44,11 +44,18 @@ if %ERRORLEVEL% EQU 0 (
     echo ========================================
     echo.
     
-    :: Get Wi-Fi IP using PowerShell
-    for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPAddress -InterfaceAlias '*Wi-Fi*' -AddressFamily IPv4).IPAddress"') do set "LOCAL_IP=%%i"
+    :: Get IP using PowerShell and write to temp file
+    powershell -NoProfile -Command "(Get-NetIPAddress -InterfaceAlias '*Wi-Fi*' -AddressFamily IPv4).IPAddress" > temp_ip.txt 2>nul
     
+    :: Read IP from file
+    set /p LOCAL_IP=<temp_ip.txt
+    del temp_ip.txt 2>nul
+    
+    :: Fallback if empty
     if not defined LOCAL_IP (
-        for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4).IPAddress | Select-Object -First 1"') do set "LOCAL_IP=%%i"
+        powershell -NoProfile -Command "[System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) | Where-Object {$_.AddressFamily -eq 'InterNetwork'} | Select-Object -First 1 -ExpandProperty IPAddressToString" > temp_ip.txt 2>nul
+        set /p LOCAL_IP=<temp_ip.txt
+        del temp_ip.txt 2>nul
     )
     
     echo Starting server on port 5000...
