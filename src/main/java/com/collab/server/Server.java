@@ -35,10 +35,12 @@ public class Server {
         OutputStream out;
         String userId;
         String username;
+        HttpExchange exchange;
         
-        WebSocketClient(String id, OutputStream out) {
+        WebSocketClient(String id, OutputStream out, HttpExchange exchange) {
             this.id = id;
             this.out = out;
+            this.exchange = exchange;
         }
         
         void send(String msg) {
@@ -114,7 +116,6 @@ public class Server {
         httpServer.createContext("/ws", exchange -> {
             try {
                 String wsKey = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
-                System.out.println("WS connection from: " + exchange.getRemoteAddress());
                 
                 if (wsKey != null) {
                     String acceptKey = createWebSocketKey(wsKey);
@@ -123,24 +124,15 @@ public class Server {
                     exchange.getResponseHeaders().set("Sec-WebSocket-Accept", acceptKey);
                     exchange.sendResponseHeaders(101, -1);
                     
-                    PipedOutputStream pipeOut = new PipedOutputStream();
-                    PipedInputStream pipeIn = new PipedInputStream(pipeOut);
-                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), pipeOut);
+                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), exchange.getResponseBody(), exchange);
                     wsClients.add(client);
-                    System.out.println("WebSocket connected! Total: " + wsClients.size());
                     
-                    clientHandlers.submit(() -> {
-                        try {
-                            handleWebSocketClient(client, pipeIn);
-                        } catch (Exception e) {
-                            System.out.println("WS handler error: " + e.getMessage());
-                        }
-                    });
+                    clientHandlers.submit(() -> handleWebSocketClient(client, exchange));
                 } else {
                     exchange.sendResponseHeaders(400, -1);
                 }
             } catch (Exception e) {
-                System.out.println("WS error: " + e.getMessage());
+                e.printStackTrace();
             }
         });
 
@@ -179,44 +171,46 @@ public class Server {
         System.out.println("HTTP Server (web UI) started on port " + port);
     }
 
-    private static void handleWebSocketClient(WebSocketClient client, InputStream in) {
+    private static void handleWebSocketClient(WebSocketClient client, HttpExchange exchange) {
         try {
+            Socket socket = (Socket) exchange.getAttribute("socket");
+            if (socket == null) {
+                socket = new Socket();
+                socket.connect(new InetSocketAddress("localhost", httpPort), 1000);
+            }
+            
+            InputStream in = exchange.getRequestBody();
+            byte[] b = new byte[8192];
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] b = new byte[4096];
             boolean inFrame = false;
             
-            while (running) {
-                int r = in.read(b);
-                if (r == -1) break;
-                
-                for (int i = 0; i < r; i++) {
-                    int byteVal = b[i] & 0xFF;
+            while (running && !socket.isClosed()) {
+                if (in.available() > 0) {
+                    int r = in.read(b);
+                    if (r == -1) break;
                     
-                    if (byteVal == 0x00) {
-                        inFrame = true;
-                    } else if (byteVal == 0xFF) {
-                        if (inFrame) {
-                            String msg = buffer.toString("UTF-8");
-                            if (!msg.isEmpty()) {
-                                System.out.println("WS: " + msg);
-                                handleWsMessage(client, msg);
+                    for (int i = 0; i < r; i++) {
+                        int byteVal = b[i] & 0xFF;
+                        if (byteVal == 0x00) {
+                            inFrame = true;
+                        } else if (byteVal == 0xFF) {
+                            if (inFrame) {
+                                String msg = buffer.toString("UTF-8");
+                                if (!msg.isEmpty()) handleWsMessage(client, msg);
+                                buffer.reset();
+                                inFrame = false;
                             }
-                            buffer.reset();
-                            inFrame = false;
+                        } else if (inFrame) {
+                            buffer.write(byteVal);
                         }
-                    } else if (inFrame) {
-                        buffer.write(byteVal);
                     }
                 }
+                Thread.sleep(10);
             }
-        } catch (SocketException e) {
-            System.out.println("Socket closed: " + e.getMessage());
         } catch (Exception e) {
-            System.out.println("WS read error: " + e.getMessage());
         } finally {
             wsClients.remove(client);
-            try { in.close(); } catch (Exception e) {}
-            System.out.println("WS client removed. Total: " + wsClients.size());
+            try { exchange.getRequestBody().close(); } catch (Exception e) {}
         }
     }
 
