@@ -5,6 +5,8 @@ let serverIP = null;
 let serverPort = null;
 let lastContent = '';
 let version = 0;
+let reconnectAttempts = 0;
+const MAX_RECONNECT = 5;
 
 function showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -80,32 +82,55 @@ function joinServer() {
         return;
     }
     
+    if (reconnectAttempts >= MAX_RECONNECT) {
+        statusEl.textContent = 'Max reconnection attempts reached';
+        statusEl.className = 'status error';
+        return;
+    }
+    
     statusEl.textContent = 'Connecting...';
+    reconnectAttempts++;
     
     userId = 'user_' + Math.random().toString(36).substr(2, 9);
     
     try {
-        socket = new WebSocket(`ws://${serverIP}:${serverPort}`);
+        const wsUrl = `ws://${serverIP}:${serverPort}/ws`;
+        console.log('Connecting to WebSocket:', wsUrl);
+        
+        socket = new WebSocket(wsUrl);
         
         socket.onopen = () => {
+            console.log('WebSocket connected!');
             statusEl.textContent = 'Connected!';
             statusEl.className = 'status success';
+            document.querySelector('.status-dot').style.background = '#22c55e';
+            document.getElementById('connection-text').textContent = `Connected to ${serverIP}:${serverPort}`;
+            reconnectAttempts = 0;
+            
             socket.send(`JOIN:${userId}:${username}`);
             showEditor();
-            document.getElementById('connection-text').textContent = `Connected to ${serverIP}:${serverPort}`;
         };
         
         socket.onmessage = (event) => {
+            console.log('Received:', event.data);
             handleMessage(event.data);
         };
         
-        socket.onclose = () => {
+        socket.onclose = (event) => {
+            console.log('WebSocket closed:', event.code, event.reason);
             document.querySelector('.status-dot').style.background = '#ef4444';
             document.getElementById('connection-text').textContent = 'Disconnected';
-            setTimeout(attemptReconnect, 3000);
+            
+            if (reconnectAttempts < MAX_RECONNECT) {
+                setTimeout(() => {
+                    statusEl.textContent = `Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT})`;
+                    joinServer();
+                }, 3000);
+            }
         };
         
-        socket.onerror = () => {
+        socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
             statusEl.textContent = 'Connection failed';
             statusEl.className = 'status error';
         };
@@ -115,43 +140,79 @@ function joinServer() {
     }
 }
 
-function attemptReconnect() {
-    if (socket && socket.readyState === WebSocket.OPEN) return;
-    document.getElementById('connection-text').textContent = 'Reconnecting...';
-    joinServer();
-}
-
 function handleMessage(message) {
+    if (message.startsWith('PONG')) {
+        return;
+    }
+    
     if (message.startsWith('JOIN_OK:')) {
-        const parts = message.substring(8).split(':');
+        const parts = message.split(':');
         if (parts.length >= 2) {
             lastContent = parts[0];
             version = parseInt(parts[1]);
-            document.getElementById('code-editor').value = lastContent;
+            const editor = document.getElementById('code-editor');
+            if (editor) {
+                editor.value = lastContent;
+            }
             updateVersion();
+            updateCharCount();
         }
     } else if (message.startsWith('EDIT_OK:')) {
-        const parts = message.substring(8).split(':');
+        const parts = message.split(':');
+        if (parts.length >= 3) {
+            const content = parts[0];
+            const newVersion = parseInt(parts[1]);
+            const editingUser = parts[2];
+            
+            if (content !== lastContent) {
+                lastContent = content;
+                version = newVersion;
+                
+                const editor = document.getElementById('code-editor');
+                if (editor && editingUser !== userId) {
+                    const cursorPos = editor.selectionStart;
+                    editor.value = content;
+                    if (cursorPos <= content.length) {
+                        editor.setSelectionRange(cursorPos, cursorPos);
+                    }
+                }
+                updateVersion();
+                updateCharCount();
+            }
+        }
+    } else if (message.startsWith('SYNC_OK:')) {
+        const parts = message.split(':');
         if (parts.length >= 3) {
             lastContent = parts[0];
             version = parseInt(parts[1]);
             const editor = document.getElementById('code-editor');
-            const editingUser = parts[2];
-            if (editingUser !== userId) {
+            if (editor) {
                 editor.value = lastContent;
             }
             updateVersion();
+            updateCharCount();
         }
     } else if (message.startsWith('USERS_OK:')) {
-        const users = message.substring(8).split(',').filter(u => u);
+        const users = message.split(':')[1].split(',').filter(u => u);
         const usersList = document.getElementById('users-list');
-        usersList.innerHTML = users.map(u => `<span class="user-badge">${u}</span>`).join('');
+        if (usersList) {
+            usersList.innerHTML = users.map(u => `<span class="user-badge">${u}</span>`).join('');
+        }
     }
 }
 
 function updateVersion() {
-    document.getElementById('version-info').textContent = `Version: ${version}`;
-    document.getElementById('char-count').textContent = `Characters: ${lastContent.length}`;
+    const versionEl = document.getElementById('version-info');
+    if (versionEl) {
+        versionEl.textContent = `Version: ${version}`;
+    }
+}
+
+function updateCharCount() {
+    const charEl = document.getElementById('char-count');
+    if (charEl) {
+        charEl.textContent = `Characters: ${lastContent.length}`;
+    }
 }
 
 const editor = document.getElementById('code-editor');
@@ -161,12 +222,16 @@ if (editor) {
         if (newContent !== lastContent) {
             handleTextChange(lastContent, newContent);
             lastContent = newContent;
-            document.getElementById('char-count').textContent = `Characters: ${newContent.length}`;
+            updateCharCount();
         }
     });
 }
 
 function handleTextChange(oldText, newText) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    
     let commonPrefix = 0;
     const minLen = Math.min(oldText.length, newText.length);
     while (commonPrefix < minLen && oldText[commonPrefix] === newText[commonPrefix]) {
@@ -182,20 +247,17 @@ function handleTextChange(oldText, newText) {
     const deleted = oldText.substring(commonPrefix, oldText.length - commonSuffix);
     const inserted = newText.substring(commonPrefix, newText.length - commonSuffix);
     
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        if (deleted) {
-            socket.send(`EDIT:${userId}:${version}:DELETE:${commonPrefix}:${deleted}`);
-        }
-        if (inserted) {
-            socket.send(`EDIT:${userId}:${version}:INSERT:${commonPrefix}:${inserted}`);
-        }
-        socket.send(`ACTIVITY:Editing`);
+    if (deleted) {
+        socket.send(`EDIT:${userId}:${version}:DELETE:${commonPrefix}:${deleted}`);
+    }
+    if (inserted) {
+        socket.send(`EDIT:${userId}:${version}:INSERT:${commonPrefix}:${inserted}`);
     }
 }
 
 function leaveSession() {
+    reconnectAttempts = MAX_RECONNECT;
     if (socket) {
-        socket.send(`LEAVE:${userId}`);
         socket.close();
     }
     socket = null;
