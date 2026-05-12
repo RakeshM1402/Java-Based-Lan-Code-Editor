@@ -44,17 +44,29 @@ if %ERRORLEVEL% EQU 0 (
     echo ========================================
     echo.
     
-    :: Get local IP address
-    for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr "IPv4.*Wi-Fi"') do set LOCAL_IP=%%a
-    set LOCAL_IP=%LOCAL_IP: =%
+    :: Get Wi-Fi IP using PowerShell
+    for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPAddress -InterfaceAlias '*Wi-Fi*' -AddressFamily IPv4).IPAddress"') do set "LOCAL_IP=%%i"
     
-    echo Starting server...
-    echo Open: http://%LOCAL_IP%:5100
+    if not defined LOCAL_IP (
+        for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4).IPAddress | Select-Object -First 1"') do set "LOCAL_IP=%%i"
+    )
+    
+    echo Starting server on port 5000...
+    echo.
+    echo ========================================
+    echo.
+    echo   OPEN THIS LINK IN YOUR BROWSER:
+    echo.
+    echo   http://%LOCAL_IP%:5100
+    echo.
+    echo   Share this link with friends!
+    echo.
+    echo ========================================
     echo.
     echo Press Ctrl+C to stop the server
     echo.
     
-    :: Start server and capture its output
+    :: Start server
     java -jar target\CollaborativeEditor.jar server 5000
     
 ) else (
