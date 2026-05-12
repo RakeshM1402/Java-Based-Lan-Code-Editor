@@ -41,23 +41,11 @@ public class Server {
             this.out = out;
         }
         
-        synchronized void send(String msg) {
+        void send(String msg) {
             try {
-                byte[] data = msg.getBytes("UTF-8");
-                ByteBuffer buf;
-                if (data.length < 126) {
-                    buf = ByteBuffer.allocate(2 + data.length);
-                    buf.put((byte) 0x81);
-                    buf.put((byte) data.length);
-                } else {
-                    buf = ByteBuffer.allocate(4 + data.length);
-                    buf.put((byte) 0x81);
-                    buf.put((byte) 126);
-                    buf.put((byte) ((data.length >> 8) & 0xFF));
-                    buf.put((byte) (data.length & 0xFF));
-                }
-                buf.put(data);
-                out.write(buf.array());
+                out.write(new byte[]{(byte)0x00});
+                out.write(msg.getBytes("UTF-8"));
+                out.write(new byte[]{(byte)0xFF});
                 out.flush();
             } catch (Exception e) {
                 wsClients.remove(this);
@@ -125,10 +113,7 @@ public class Server {
 
         httpServer.createContext("/ws", exchange -> {
             try {
-                String conn = exchange.getRequestHeaders().getFirst("Connection");
-                String upgrade = exchange.getRequestHeaders().getFirst("Upgrade");
                 String wsKey = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
-                
                 System.out.println("WS connection from: " + exchange.getRemoteAddress());
                 
                 if (wsKey != null) {
@@ -138,19 +123,24 @@ public class Server {
                     exchange.getResponseHeaders().set("Sec-WebSocket-Accept", acceptKey);
                     exchange.sendResponseHeaders(101, -1);
                     
-                    OutputStream rawOut = exchange.getResponseBody();
-                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), rawOut);
+                    PipedOutputStream pipeOut = new PipedOutputStream();
+                    PipedInputStream pipeIn = new PipedInputStream(pipeOut);
+                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), pipeOut);
                     wsClients.add(client);
-                    System.out.println("WebSocket connected! Total clients: " + wsClients.size());
+                    System.out.println("WebSocket connected! Total: " + wsClients.size());
                     
-                    clientHandlers.submit(() -> handleWebSocketClient(client, exchange));
+                    clientHandlers.submit(() -> {
+                        try {
+                            handleWebSocketClient(client, pipeIn);
+                        } catch (Exception e) {
+                            System.out.println("WS handler error: " + e.getMessage());
+                        }
+                    });
                 } else {
-                    System.out.println("WS handshake failed - missing key");
                     exchange.sendResponseHeaders(400, -1);
                 }
             } catch (Exception e) {
-                System.out.println("WS handler error: " + e.getMessage());
-                e.printStackTrace();
+                System.out.println("WS error: " + e.getMessage());
             }
         });
 
@@ -189,13 +179,11 @@ public class Server {
         System.out.println("HTTP Server (web UI) started on port " + port);
     }
 
-    private static void handleWebSocketClient(WebSocketClient client, HttpExchange exchange) {
-        InputStream in = null;
+    private static void handleWebSocketClient(WebSocketClient client, InputStream in) {
         try {
-            in = exchange.getRequestBody();
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             byte[] b = new byte[4096];
-            boolean[] inFrame = {false};
+            boolean inFrame = false;
             
             while (running) {
                 int r = in.read(b);
@@ -205,25 +193,19 @@ public class Server {
                     int byteVal = b[i] & 0xFF;
                     
                     if (byteVal == 0x00) {
-                        if (inFrame[0]) {
-                            buffer.write(byteVal);
-                        } else {
-                            inFrame[0] = true;
-                        }
+                        inFrame = true;
                     } else if (byteVal == 0xFF) {
-                        if (inFrame[0]) {
+                        if (inFrame) {
                             String msg = buffer.toString("UTF-8");
                             if (!msg.isEmpty()) {
                                 System.out.println("WS: " + msg);
                                 handleWsMessage(client, msg);
                             }
                             buffer.reset();
-                            inFrame[0] = false;
+                            inFrame = false;
                         }
-                    } else {
-                        if (inFrame[0]) {
-                            buffer.write(byteVal);
-                        }
+                    } else if (inFrame) {
+                        buffer.write(byteVal);
                     }
                 }
             }
@@ -233,8 +215,8 @@ public class Server {
             System.out.println("WS read error: " + e.getMessage());
         } finally {
             wsClients.remove(client);
-            if (in != null) try { in.close(); } catch (Exception e) {}
-            System.out.println("WebSocket client disconnected");
+            try { in.close(); } catch (Exception e) {}
+            System.out.println("WS client removed. Total: " + wsClients.size());
         }
     }
 
