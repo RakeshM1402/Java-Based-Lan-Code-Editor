@@ -20,7 +20,7 @@ echo.
 
 :: Create Maven wrapper directory
 echo [SETUP] Setting up Maven Wrapper...
-if not exist ".mvn\wrapper" mkdir ".mvn\wrapper"
+mkdir ".mvn\wrapper" 2>nul
 
 :: Download Maven Wrapper JAR
 set WRAPPER_URL=https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar
@@ -28,12 +28,7 @@ set WRAPPER_JAR=.mvn\wrapper\maven-wrapper.jar
 
 if not exist "%WRAPPER_JAR%" (
     echo Downloading maven-wrapper.jar...
-    powershell -Command "Invoke-WebRequest -Uri '%WRAPPER_URL%' -OutFile '%WRAPPER_JAR%'"
-    if %ERRORLEVEL% NEQ 0 (
-        echo [ERROR] Failed to download Maven Wrapper
-        pause
-        exit /b 1
-    )
+    powershell -NoProfile -Command "& {Invoke-WebRequest -Uri 'https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar' -OutFile '.mvn\wrapper\maven-wrapper.jar'}"
 )
 echo [OK] Maven Wrapper ready
 
@@ -57,9 +52,6 @@ if %ERRORLEVEL% EQU 0 (
 ) else (
     echo.
     echo [ERROR] Build failed. Check output above.
-    echo.
-    echo Trying with verbose output...
-    call mvnw.cmd clean package -DskipTests --batch-mode
     pause
     exit /b 1
 )
