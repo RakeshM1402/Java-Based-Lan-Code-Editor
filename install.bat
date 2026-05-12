@@ -35,7 +35,7 @@ echo [OK] Maven Wrapper ready
 :: Build project
 echo.
 echo [BUILD] Building project...
-call mvnw.cmd clean package -DskipTests
+call mvnw.cmd clean package -DskipTests >nul 2>&1
 
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -43,15 +43,23 @@ if %ERRORLEVEL% EQU 0 (
     echo   [SUCCESS] Build Complete!
     echo ========================================
     echo.
-    echo Run server:  java -jar target\CollaborativeEditor.jar server 5000
-    echo Run client:  java -jar target\CollaborativeEditor.jar client [IP] 5000 [username]
+    
+    :: Get local IP address
+    for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr "IPv4.*Wi-Fi"') do set LOCAL_IP=%%a
+    set LOCAL_IP=%LOCAL_IP: =%
+    
+    echo Starting server...
+    echo Open: http://%LOCAL_IP%:5100
     echo.
-    echo Web UI: http://localhost:5100
+    echo Press Ctrl+C to stop the server
     echo.
-    pause
+    
+    :: Start server and capture its output
+    java -jar target\CollaborativeEditor.jar server 5000
+    
 ) else (
     echo.
-    echo [ERROR] Build failed. Check output above.
+    echo [ERROR] Build failed.
     pause
     exit /b 1
 )
