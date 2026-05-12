@@ -83,7 +83,9 @@ public class EditorPanel extends Panel {
         FileDialog fd = new FileDialog((Frame) getParent(), "Save File", FileDialog.SAVE);
         fd.setVisible(true);
         if (fd.getFile() != null) {
-            Client.saveFile(fd.getDirectory() + fd.getFile());
+            String dir = fd.getDirectory();
+            String fileName = (dir != null ? dir : "") + fd.getFile();
+            Client.saveFile(fileName);
         }
     }
 
@@ -91,7 +93,9 @@ public class EditorPanel extends Panel {
         FileDialog fd = new FileDialog((Frame) getParent(), "Open File", FileDialog.LOAD);
         fd.setVisible(true);
         if (fd.getFile() != null) {
-            Client.loadFile(fd.getDirectory() + fd.getFile());
+            String dir = fd.getDirectory();
+            String fileName = (dir != null ? dir : "") + fd.getFile();
+            Client.loadFile(fileName);
         }
     }
 

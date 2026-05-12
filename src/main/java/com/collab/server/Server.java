@@ -10,17 +10,126 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import com.sun.net.httpserver.*;
+import com.sun.net.httpserver.HttpServer;
 
 public class Server {
     private static ServerSocket serverSocket;
+    private static HttpServer httpServer;
     private static SessionManager sessionManager;
     private static Document document;
     private static SyncEngine syncEngine;
     private static VersionController versionController;
     private static boolean running = true;
     private static final ExecutorService clientHandlers = Executors.newCachedThreadPool();
+    private static int tcpPort;
+    private static int httpPort;
+
+    private static void displayLANAddresses() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface ni = interfaces.nextElement();
+                if (ni.isUp() && !ni.isLoopback()) {
+                    Enumeration<InetAddress> addresses = ni.getInetAddresses();
+                    while (addresses.hasMoreElements()) {
+                        InetAddress addr = addresses.nextElement();
+                        if (addr instanceof Inet4Address) {
+                            System.out.println("  " + addr.getHostAddress() + " (" + ni.getDisplayName() + ")");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("  Could not detect LAN addresses");
+        }
+    }
+
+    private static void startHttpServer(int port) throws IOException {
+        httpServer = HttpServer.create(new InetSocketAddress(port), 0);
+        
+        httpServer.createContext("/", exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            if (path.equals("/") || path.isEmpty()) {
+                path = "/index.html";
+            }
+            
+            String resourcePath = "/web" + path;
+            InputStream is = Server.class.getResourceAsStream(resourcePath);
+            
+            if (is != null) {
+                byte[] content = is.readAllBytes();
+                String contentType = getContentType(path);
+                exchange.getResponseHeaders().set("Content-Type", contentType);
+                exchange.sendResponseHeaders(200, content.length);
+                exchange.getResponseBody().write(content);
+            } else {
+                String response = "404 Not Found";
+                exchange.sendResponseHeaders(404, response.length());
+                exchange.getResponseBody().write(response.getBytes());
+            }
+            is.close();
+        });
+
+        httpServer.createContext("/api/server/start", exchange -> sendJson(exchange, "{\"status\":\"running\",\"port\":" + tcpPort + "}"));
+        httpServer.createContext("/api/server/stop", exchange -> sendJson(exchange, "{\"status\":\"stopped\"}"));
+        httpServer.createContext("/api/server/status", exchange -> {
+            StringBuilder ips = new StringBuilder();
+            try {
+                Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                while (interfaces.hasMoreElements()) {
+                    NetworkInterface ni = interfaces.nextElement();
+                    if (ni.isUp() && !ni.isLoopback()) {
+                        Enumeration<InetAddress> addresses = ni.getInetAddresses();
+                        while (addresses.hasMoreElements()) {
+                            InetAddress addr = addresses.nextElement();
+                            if (addr instanceof Inet4Address) {
+                                if (ips.length() > 0) ips.append(",");
+                                ips.append("\"").append(addr.getHostAddress()).append("\"");
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {}
+            sendJson(exchange, "{\"status\":\"running\",\"port\":" + tcpPort + ",\"httpPort\":" + httpPort + ",\"ips\":[" + ips + "]}");
+        });
+        httpServer.createContext("/api/users", exchange -> {
+            List<String> users = new ArrayList<>(sessionManager.getUserIds());
+            sendJson(exchange, "{\"status\":\"ok\",\"users\":[\"" + String.join("\",\"", users) + "\"]}");
+        });
+
+        httpServer.setExecutor(null);
+        httpServer.start();
+        System.out.println("HTTP Server (web UI) started on port " + port);
+    }
+
+    private static String getContentType(String path) {
+        if (path.endsWith(".html")) return "text/html";
+        if (path.endsWith(".css")) return "text/css";
+        if (path.endsWith(".js")) return "application/javascript";
+        if (path.endsWith(".json")) return "application/json";
+        return "text/plain";
+    }
+
+    private static void sendJson(HttpExchange exchange, String json) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        byte[] bytes = json.getBytes();
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+    }
 
     public static void start(int port) throws Exception {
+        start(port, port + 100);
+    }
+
+    public static void start(int tcpPort, int httpPort) throws Exception {
+        Server.tcpPort = tcpPort;
+        Server.httpPort = httpPort;
+        
         document = new Document("collaborative_doc.txt");
         syncEngine = new SyncEngine(document);
         sessionManager = new SessionManager(20);
@@ -31,9 +140,13 @@ public class Server {
             System.out.println("Warning: Could not initialize database, continuing without persistence");
         }
 
-        serverSocket = new ServerSocket(port);
-        System.out.println("=== Server started on port " + port + " ===");
+        startHttpServer(httpPort);
+
+        serverSocket = new ServerSocket(tcpPort);
+        System.out.println("=== TCP Server started on port " + tcpPort + " ===");
         System.out.println("Document: " + document.getName());
+        System.out.println("Available LAN addresses:");
+        displayLANAddresses();
         
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
@@ -58,6 +171,7 @@ public class Server {
 
     public static void stop() throws Exception {
         running = false;
+        if (httpServer != null) httpServer.stop(1);
         if (serverSocket != null) serverSocket.close();
         if (versionController != null) versionController.close();
         clientHandlers.shutdown();
@@ -106,6 +220,26 @@ public class Server {
                 handleSave(message);
             } else if (message.startsWith("LOAD:")) {
                 handleLoad(message);
+            } else if (message.startsWith("LEAVE:")) {
+                handleLeave(message);
+            } else if (message.equals("PING")) {
+                out.println("PONG");
+            }
+        }
+
+        private void handleLeave(String message) {
+            String[] parts = message.split(":", 2);
+            if (parts.length >= 2) {
+                String leaveUserId = parts[1];
+                System.out.println("User left: " + leaveUserId);
+                cleanupForUser(leaveUserId);
+            }
+        }
+
+        private void cleanupForUser(String uid) {
+            if (sessionManager.getUserIds().contains(uid)) {
+                document.removeUser(uid);
+                sessionManager.removeSession(uid);
             }
         }
 

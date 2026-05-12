@@ -14,35 +14,56 @@ public class Client {
     private static BufferedReader in;
     private static String userId;
     private static String username;
+    private static String serverIP;
+    private static int serverPort;
     private static EditorFrame editorFrame;
     private static ExecutorService listenerExecutor = Executors.newSingleThreadExecutor();
     private static volatile boolean connected = false;
+    private static ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+    private static ScheduledFuture<?> heartbeatTask;
 
     public static void start(String serverIP, int port, String username) throws Exception {
         Client.username = username;
+        Client.serverIP = serverIP;
+        Client.serverPort = port;
         userId = UUID.randomUUID().toString();
 
-        socket = new Socket(serverIP, port);
-        out = new PrintWriter(socket.getOutputStream(), true);
-        in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-        System.out.println("Connected to server at " + serverIP + ":" + port);
-        
-        java.awt.EventQueue.invokeLater(() -> {
-            editorFrame = new EditorFrame(Client.class, "Collaborative Editor - " + username);
-        });
-
-        Thread.sleep(500);
-        joinServer();
-
-        connected = true;
-        startListener();
+        connect();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 stop();
             } catch (Exception e) {}
         }));
+    }
+
+    private static void connect() throws Exception {
+        socket = new Socket(serverIP, serverPort);
+        out = new PrintWriter(socket.getOutputStream(), true);
+        in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+
+        System.out.println("Connected to server at " + serverIP + ":" + serverPort);
+        
+        if (editorFrame == null) {
+            java.awt.EventQueue.invokeLater(() -> {
+                editorFrame = new EditorFrame(Client.class, "Collaborative Editor - " + username);
+            });
+            Thread.sleep(500);
+        }
+
+        joinServer();
+
+        connected = true;
+        startListener();
+        startHeartbeat();
+    }
+
+    private static void startHeartbeat() {
+        heartbeatTask = heartbeatExecutor.scheduleAtFixedRate(() -> {
+            if (connected && out != null) {
+                out.println("PING");
+            }
+        }, 10, 10, TimeUnit.SECONDS);
     }
 
     private static void joinServer() {
@@ -59,12 +80,36 @@ public class Client {
             } catch (IOException e) {
                 System.err.println("Disconnected from server");
                 connected = false;
+                attemptReconnect();
             }
         });
     }
 
+    private static void attemptReconnect() {
+        if (heartbeatTask != null) heartbeatTask.cancel(false);
+        System.out.println("Attempting to reconnect in 5 seconds...");
+        new Thread(() -> {
+            try {
+                Thread.sleep(5000);
+                for (int i = 0; i < 3; i++) {
+                    try {
+                        connect();
+                        System.out.println("Reconnected successfully!");
+                        return;
+                    } catch (Exception e) {
+                        System.out.println("Reconnect attempt " + (i + 1) + " failed...");
+                        Thread.sleep(3000);
+                    }
+                }
+                System.err.println("Failed to reconnect after 3 attempts");
+            } catch (InterruptedException e) {}
+        }).start();
+    }
+
     private static void handleMessage(String message) {
-        if (message.startsWith("JOIN_OK:")) {
+        if (message.startsWith("PONG")) {
+            // Heartbeat response received
+        } else if (message.startsWith("JOIN_OK:")) {
             String[] parts = message.substring(8).split(":", 2);
             if (parts.length >= 2) {
                 String content = parts[0];
@@ -142,9 +187,11 @@ public class Client {
 
     public static void stop() throws Exception {
         connected = false;
+        if (heartbeatTask != null) heartbeatTask.cancel(false);
         if (out != null) out.println("LEAVE:" + userId);
         if (socket != null) socket.close();
         listenerExecutor.shutdown();
+        heartbeatExecutor.shutdown();
         System.out.println("Client disconnected.");
     }
 
