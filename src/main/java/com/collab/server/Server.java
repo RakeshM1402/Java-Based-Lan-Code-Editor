@@ -28,8 +28,40 @@ public class Server {
     private static int tcpPort;
     private static int httpPort;
 
-    private static Map<String, HttpExchange> wsClients = new ConcurrentHashMap<>();
-    private static Map<String, PrintWriter> wsOutputs = new ConcurrentHashMap<>();
+    private static final Set<WebSocketClient> wsClients = ConcurrentHashMap.newKeySet();
+
+    private static class WebSocketClient {
+        String id;
+        OutputStream out;
+        String userId;
+        String username;
+        
+        WebSocketClient(String id, OutputStream out) {
+            this.id = id;
+            this.out = out;
+        }
+        
+        void send(String msg) {
+            try {
+                byte[] data = msg.getBytes("UTF-8");
+                ByteBuffer buf;
+                if (data.length < 126) {
+                    buf = ByteBuffer.allocate(2 + data.length);
+                    buf.put((byte) 0x81);
+                    buf.put((byte) data.length);
+                } else {
+                    buf = ByteBuffer.allocate(4 + data.length);
+                    buf.put((byte) 0x81);
+                    buf.put((byte) 126);
+                    buf.put((byte) ((data.length >> 8) & 0xFF));
+                    buf.put((byte) (data.length & 0xFF));
+                }
+                buf.put(data);
+                out.write(buf.array());
+                out.flush();
+            } catch (Exception e) {}
+        }
+    }
 
     private static void displayLANAddresses() {
         try {
@@ -51,11 +83,10 @@ public class Server {
         }
     }
 
-    private static String createWebSocketResponse(String key) throws Exception {
+    private static String createWebSocketKey(String key) throws Exception {
         String guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        String combined = key + guid;
         MessageDigest md = MessageDigest.getInstance("SHA-1");
-        byte[] hash = md.digest(combined.getBytes("ISO-8859-1"));
+        byte[] hash = md.digest((key + guid).getBytes("ISO-8859-1"));
         return Base64.getEncoder().encodeToString(hash);
     }
 
@@ -63,53 +94,62 @@ public class Server {
         httpServer = HttpServer.create(new InetSocketAddress(port), 0);
         
         httpServer.createContext("/", exchange -> {
-            String path = exchange.getRequestURI().getPath();
-            if (path.equals("/") || path.isEmpty()) {
-                path = "/index.html";
+            try {
+                String path = exchange.getRequestURI().getPath();
+                if (path.equals("/") || path.isEmpty()) {
+                    path = "/index.html";
+                }
+                
+                String resourcePath = "/web" + path;
+                InputStream is = Server.class.getResourceAsStream(resourcePath);
+                
+                if (is != null) {
+                    byte[] content = is.readAllBytes();
+                    String contentType = getContentType(path);
+                    exchange.getResponseHeaders().set("Content-Type", contentType);
+                    exchange.sendResponseHeaders(200, content.length);
+                    exchange.getResponseBody().write(content);
+                } else {
+                    String response = "404 Not Found";
+                    exchange.sendResponseHeaders(404, response.length());
+                    exchange.getResponseBody().write(response.getBytes());
+                }
+                exchange.getResponseBody().close();
+            } catch (Exception e) {
+                try {
+                    exchange.sendResponseHeaders(500, -1);
+                } catch (Exception ex) {}
             }
-            
-            String resourcePath = "/web" + path;
-            InputStream is = Server.class.getResourceAsStream(resourcePath);
-            
-            if (is != null) {
-                byte[] content = is.readAllBytes();
-                String contentType = getContentType(path);
-                exchange.getResponseHeaders().set("Content-Type", contentType);
-                exchange.sendResponseHeaders(200, content.length);
-                exchange.getResponseBody().write(content);
-            } else {
-                String response = "404 Not Found";
-                exchange.sendResponseHeaders(404, response.length());
-                exchange.getResponseBody().write(response.getBytes());
-            }
-            is.close();
         });
 
         httpServer.createContext("/ws", exchange -> {
-            String connHeader = exchange.getRequestHeaders().getFirst("Connection");
-            String upgradeHeader = exchange.getRequestHeaders().getFirst("Upgrade");
-            String keyHeader = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
-            String wsKey = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
-            
-            if (connHeader != null && connHeader.toLowerCase().contains("upgrade") && 
-                "websocket".equalsIgnoreCase(upgradeHeader) && wsKey != null) {
-                try {
-                    String responseKey = createWebSocketResponse(wsKey);
+            try {
+                String conn = exchange.getRequestHeaders().getFirst("Connection");
+                String upgrade = exchange.getRequestHeaders().getFirst("Upgrade");
+                String wsKey = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
+                
+                if (conn != null && conn.toLowerCase().contains("upgrade") && 
+                    "websocket".equalsIgnoreCase(upgrade) && wsKey != null) {
+                    
+                    String acceptKey = createWebSocketKey(wsKey);
                     exchange.getResponseHeaders().set("Upgrade", "websocket");
                     exchange.getResponseHeaders().set("Connection", "Upgrade");
-                    exchange.getResponseHeaders().set("Sec-WebSocket-Accept", responseKey);
+                    exchange.getResponseHeaders().set("Sec-WebSocket-Accept", acceptKey);
                     exchange.sendResponseHeaders(101, -1);
                     
-                    String userId = "ws_" + System.currentTimeMillis();
-                    wsClients.put(userId, exchange);
-                    wsOutputs.put(userId, new PrintWriter(new OutputStreamWriter(exchange.getResponseBody())));
+                    OutputStream rawOut = exchange.getResponseBody();
+                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), rawOut);
+                    wsClients.add(client);
                     
-                    readWebSocketMessages(exchange, userId);
-                } catch (Exception e) {
-                    e.printStackTrace();
+                    handleWebSocketClient(client, exchange);
+                } else {
+                    exchange.sendResponseHeaders(400, -1);
                 }
-            } else {
-                exchange.sendResponseHeaders(400, -1);
+            } catch (Exception e) {
+                e.printStackTrace();
+                try {
+                    exchange.sendResponseHeaders(500, -1);
+                } catch (Exception ex) {}
             }
         });
 
@@ -137,7 +177,9 @@ public class Server {
         });
         httpServer.createContext("/api/users", exchange -> {
             List<String> users = new ArrayList<>(sessionManager.getUserIds());
-            users.addAll(wsClients.keySet());
+            for (WebSocketClient c : wsClients) {
+                if (c.username != null) users.add(c.username);
+            }
             sendJson(exchange, "{\"status\":\"ok\",\"users\":[\"" + String.join("\",\"", users) + "\"]}");
         });
 
@@ -146,73 +188,49 @@ public class Server {
         System.out.println("HTTP Server (web UI) started on port " + port);
     }
 
-    private static void readWebSocketMessages(HttpExchange exchange, String userId) {
+    private static void handleWebSocketClient(WebSocketClient client, HttpExchange exchange) {
         try {
-            InputStream is = exchange.getRequestBody();
-            byte[] buffer = new byte[1024];
-            StringBuilder message = new StringBuilder();
+            InputStream in = exchange.getRequestBody();
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] b = new byte[1024];
             
             while (running) {
-                int bytesRead = is.read(buffer);
-                if (bytesRead == -1) break;
+                int r = in.read(b);
+                if (r == -1) break;
                 
-                int opcode = buffer[0] & 0xFF;
-                if (opcode == 0x8) break;
-                
-                if (opcode == 0x81) {
-                    int length = buffer[1] & 0x7F;
-                    int maskOffset = 2;
-                    boolean masked = (buffer[1] & 0x80) != 0;
-                    
-                    if (length == 126) {
-                        length = ((buffer[2] & 0xFF) << 8) | (buffer[3] & 0xFF);
-                        maskOffset = 4;
-                    } else if (length == 127) {
-                        length = (int)((((long)buffer[2] & 0xFF) << 56) | (((long)buffer[3] & 0xFF) << 48) |
-                                 (((long)buffer[4] & 0xFF) << 40) | (((long)buffer[5] & 0xFF) << 32) |
-                                 (((long)buffer[6] & 0xFF) << 24) | (((long)buffer[7] & 0xFF) << 16) |
-                                 (((long)buffer[8] & 0xFF) << 8) | ((long)buffer[9] & 0xFF));
-                        maskOffset = 10;
-                    }
-                    
-                    if (masked) {
-                        byte[] mask = new byte[4];
-                        System.arraycopy(buffer, maskOffset, mask, 0, 4);
-                        int dataStart = maskOffset + 4;
-                        
-                        for (int i = 0; i < length && (dataStart + i) < bytesRead; i++) {
-                            buffer[dataStart + i] ^= mask[i % 4];
+                for (int i = 0; i < r; i++) {
+                    if (b[i] == (byte) 0xFF) {
+                        String msg = buffer.toString("UTF-8");
+                        if (!msg.isEmpty()) {
+                            handleWsMessage(client, msg);
                         }
+                        buffer.reset();
+                    } else if (b[i] != (byte) 0x00) {
+                        buffer.write(b[i]);
                     }
-                    
-                    int dataStart = maskOffset + (masked ? 4 : 0);
-                    message.append(new String(buffer, dataStart, Math.min(length, bytesRead - dataStart), "UTF-8"));
-                    
-                    String msgStr = message.toString();
-                    message.setLength(0);
-                    handleWsMessage(userId, msgStr);
                 }
+                
+                int opcode = b[0] & 0xFF;
+                if (opcode == 0x88) break;
             }
         } catch (Exception e) {
         } finally {
-            wsClients.remove(userId);
-            wsOutputs.remove(userId);
-            try { exchange.close(); } catch (Exception e) {}
+            wsClients.remove(client);
+            try { in.close(); } catch (Exception e) {}
         }
     }
 
-    private static void handleWsMessage(String userId, String message) {
+    private static void handleWsMessage(WebSocketClient client, String message) {
+        System.out.println("WS Message: " + message);
+        
         if (message.startsWith("JOIN:")) {
             String[] parts = message.split(":", 3);
             if (parts.length >= 3) {
-                PrintWriter out = wsOutputs.get(userId);
-                if (out != null) {
-                    sessionManager.addSession(userId, parts[2], out);
-                    document.addUser(userId);
-                    out.println("JOIN_OK:" + document.getContent() + ":" + document.getVersion());
-                    out.flush();
-                    broadcastWs("JOIN_OK:" + document.getContent() + ":" + document.getVersion() + ":" + userId);
-                }
+                client.userId = parts[1];
+                client.username = parts[2];
+                client.send("JOIN_OK:" + document.getContent() + ":" + document.getVersion());
+                System.out.println("Web client joined: " + client.username);
+                broadcastWs("EDIT_OK:" + document.getContent() + ":" + document.getVersion() + ":" + client.userId);
             }
         } else if (message.startsWith("EDIT:")) {
             String[] parts = message.split(":", 5);
@@ -228,53 +246,19 @@ public class Server {
                     EditOperation operation = new EditOperation(uid, opType, position, text, version);
                     String result = syncEngine.processOperation(operation);
                     broadcastWs("EDIT_OK:" + result + ":" + document.getVersion() + ":" + uid);
-                } catch (Exception e) {}
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         } else if (message.equals("PING")) {
-            PrintWriter out = wsOutputs.get(userId);
-            if (out != null) {
-                out.print("\u0000PONG\u0000");
-                out.flush();
-            }
+            client.send("PONG");
         }
     }
 
     private static void broadcastWs(String message) {
-        for (Map.Entry<String, PrintWriter> entry : wsOutputs.entrySet()) {
-            try {
-                PrintWriter out = entry.getValue();
-                ByteBuffer buffer = encodeWebSocketFrame(message);
-                out.write(new String(buffer.array(), "ISO-8859-1"));
-                out.flush();
-            } catch (Exception e) {}
+        for (WebSocketClient c : wsClients) {
+            c.send(message);
         }
-    }
-
-    private static ByteBuffer encodeWebSocketFrame(String message) {
-        byte[] data = message.getBytes();
-        ByteBuffer buffer;
-        
-        if (data.length < 126) {
-            buffer = ByteBuffer.allocate(2 + data.length);
-            buffer.put((byte) 0x81);
-            buffer.put((byte) data.length);
-        } else if (data.length < 65536) {
-            buffer = ByteBuffer.allocate(4 + data.length);
-            buffer.put((byte) 0x81);
-            buffer.put((byte) 126);
-            buffer.put((byte) ((data.length >> 8) & 0xFF));
-            buffer.put((byte) (data.length & 0xFF));
-        } else {
-            buffer = ByteBuffer.allocate(10 + data.length);
-            buffer.put((byte) 0x81);
-            buffer.put((byte) 127);
-            for (int i = 7; i >= 0; i--) {
-                buffer.put((byte) ((data.length >> (8 * i)) & 0xFF));
-            }
-        }
-        buffer.put(data);
-        buffer.flip();
-        return buffer;
     }
 
     private static String getContentType(String path) {

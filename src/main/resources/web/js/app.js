@@ -95,29 +95,30 @@ function joinServer() {
     
     try {
         const wsUrl = `ws://${serverIP}:${serverPort}/ws`;
-        console.log('Connecting to WebSocket:', wsUrl);
+        console.log('Connecting to:', wsUrl);
         
         socket = new WebSocket(wsUrl);
         
         socket.onopen = () => {
-            console.log('WebSocket connected!');
+            console.log('Connected!');
             statusEl.textContent = 'Connected!';
             statusEl.className = 'status success';
             document.querySelector('.status-dot').style.background = '#22c55e';
             document.getElementById('connection-text').textContent = `Connected to ${serverIP}:${serverPort}`;
             reconnectAttempts = 0;
             
-            socket.send(`JOIN:${userId}:${username}`);
+            send('\u0000JOIN:' + userId + ':' + username + '\u0000');
             showEditor();
         };
         
         socket.onmessage = (event) => {
-            console.log('Received:', event.data);
-            handleMessage(event.data);
+            const data = event.data;
+            console.log('Received:', data);
+            handleMessage(data);
         };
         
         socket.onclose = (event) => {
-            console.log('WebSocket closed:', event.code, event.reason);
+            console.log('Closed:', event.code);
             document.querySelector('.status-dot').style.background = '#ef4444';
             document.getElementById('connection-text').textContent = 'Disconnected';
             
@@ -130,7 +131,7 @@ function joinServer() {
         };
         
         socket.onerror = (error) => {
-            console.error('WebSocket error:', error);
+            console.error('Error:', error);
             statusEl.textContent = 'Connection failed';
             statusEl.className = 'status error';
         };
@@ -140,10 +141,14 @@ function joinServer() {
     }
 }
 
-function handleMessage(message) {
-    if (message.startsWith('PONG')) {
-        return;
+function send(msg) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send('\u0000' + msg + '\u0000');
     }
+}
+
+function handleMessage(message) {
+    if (message.startsWith('PONG')) return;
     
     if (message.startsWith('JOIN_OK:')) {
         const parts = message.split(':');
@@ -169,12 +174,8 @@ function handleMessage(message) {
                 version = newVersion;
                 
                 const editor = document.getElementById('code-editor');
-                if (editor && editingUser !== userId) {
-                    const cursorPos = editor.selectionStart;
+                if (editor) {
                     editor.value = content;
-                    if (cursorPos <= content.length) {
-                        editor.setSelectionRange(cursorPos, cursorPos);
-                    }
                 }
                 updateVersion();
                 updateCharCount();
@@ -186,9 +187,7 @@ function handleMessage(message) {
             lastContent = parts[0];
             version = parseInt(parts[1]);
             const editor = document.getElementById('code-editor');
-            if (editor) {
-                editor.value = lastContent;
-            }
+            if (editor) editor.value = lastContent;
             updateVersion();
             updateCharCount();
         }
@@ -203,16 +202,12 @@ function handleMessage(message) {
 
 function updateVersion() {
     const versionEl = document.getElementById('version-info');
-    if (versionEl) {
-        versionEl.textContent = `Version: ${version}`;
-    }
+    if (versionEl) versionEl.textContent = `Version: ${version}`;
 }
 
 function updateCharCount() {
     const charEl = document.getElementById('char-count');
-    if (charEl) {
-        charEl.textContent = `Characters: ${lastContent.length}`;
-    }
+    if (charEl) charEl.textContent = `Characters: ${lastContent.length}`;
 }
 
 const editor = document.getElementById('code-editor');
@@ -228,9 +223,7 @@ if (editor) {
 }
 
 function handleTextChange(oldText, newText) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-        return;
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     
     let commonPrefix = 0;
     const minLen = Math.min(oldText.length, newText.length);
@@ -247,19 +240,13 @@ function handleTextChange(oldText, newText) {
     const deleted = oldText.substring(commonPrefix, oldText.length - commonSuffix);
     const inserted = newText.substring(commonPrefix, newText.length - commonSuffix);
     
-    if (deleted) {
-        socket.send(`EDIT:${userId}:${version}:DELETE:${commonPrefix}:${deleted}`);
-    }
-    if (inserted) {
-        socket.send(`EDIT:${userId}:${version}:INSERT:${commonPrefix}:${inserted}`);
-    }
+    if (deleted) send('EDIT:' + userId + ':' + version + ':DELETE:' + commonPrefix + ':' + deleted);
+    if (inserted) send('EDIT:' + userId + ':' + version + ':INSERT:' + commonPrefix + ':' + inserted);
 }
 
 function leaveSession() {
     reconnectAttempts = MAX_RECONNECT;
-    if (socket) {
-        socket.close();
-    }
+    if (socket) socket.close();
     socket = null;
     userId = null;
     username = null;
@@ -270,6 +257,6 @@ function leaveSession() {
 
 setInterval(() => {
     if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send('PING');
+        send('PING');
     }
 }, 10000);
