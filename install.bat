@@ -40,7 +40,7 @@ echo [OK] Maven Wrapper ready
 :: Build project
 echo.
 echo [BUILD] Building project...
-call mvnw.cmd clean package -q
+call mvnw.cmd clean package -DskipTests
 
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -58,8 +58,8 @@ if %ERRORLEVEL% EQU 0 (
     echo.
     echo [ERROR] Build failed. Check output above.
     echo.
-    echo Trying to see full error...
-    call mvnw.cmd clean package
+    echo Trying with verbose output...
+    call mvnw.cmd clean package -DskipTests --batch-mode
     pause
     exit /b 1
 )
