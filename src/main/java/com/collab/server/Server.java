@@ -189,8 +189,9 @@ public class Server {
     }
 
     private static void handleWebSocketClient(WebSocketClient client, HttpExchange exchange) {
+        InputStream in = null;
         try {
-            InputStream in = exchange.getRequestBody();
+            in = exchange.getRequestBody();
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             byte[] b = new byte[1024];
             
@@ -216,7 +217,7 @@ public class Server {
         } catch (Exception e) {
         } finally {
             wsClients.remove(client);
-            try { in.close(); } catch (Exception e) {}
+            if (in != null) try { in.close(); } catch (Exception e) {}
         }
     }
 
