@@ -103,4 +103,6 @@ java -jar CollaborativeEditor.jar client 192.168.1.x 5000 username
 - [x] Backend bugs fixed
 - [x] Frontend created
 - [x] HTTP integration done
+- [x] One-command setup created (mvnw, install.bat, install.sh)
+- [x] README.md documentation added
 - [ ] LAN tested
