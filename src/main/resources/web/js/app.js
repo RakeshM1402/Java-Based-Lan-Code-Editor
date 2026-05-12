@@ -1,15 +1,14 @@
 let socket = null;
 let userId = null;
-let username = null;
 let lastContent = '';
 let version = 0;
 
 const editorIP = window.location.hostname;
-const editorPort = 5100;
+const editorPort = 5200;
 
 function showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(screenId).classList.add('active');
+    document.getElementById(screenId).classList.add('screen ' + screenId);
 }
 
 function showJoin() { showScreen('join-screen'); }
@@ -40,14 +39,13 @@ function connectToServer() {
     userId = 'user_' + Math.random().toString(36).substr(2, 9);
     
     try {
-        const wsUrl = `ws://${serverIP}:${serverPort}/ws`;
+        const wsUrl = `ws://${serverIP}:${serverPort}`;
         socket = new WebSocket(wsUrl);
         
         socket.onopen = () => {
             statusEl.textContent = 'Connected!';
             document.querySelector('.status-dot').style.background = '#22c55e';
             document.getElementById('connection-text').textContent = `Connected to ${serverIP}:${serverPort}`;
-            
             socket.send('\u0000JOIN:' + userId + ':' + username + '\u0000');
             showEditor();
         };

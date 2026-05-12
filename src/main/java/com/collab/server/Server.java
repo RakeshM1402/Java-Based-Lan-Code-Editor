@@ -10,7 +10,6 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.Base64;
 
@@ -18,6 +17,7 @@ import com.sun.net.httpserver.*;
 
 public class Server {
     private static ServerSocket serverSocket;
+    private static ServerSocket wsServerSocket;
     private static HttpServer httpServer;
     private static SessionManager sessionManager;
     private static Document document;
@@ -27,31 +27,35 @@ public class Server {
     private static final ExecutorService clientHandlers = Executors.newCachedThreadPool();
     private static int tcpPort;
     private static int httpPort;
+    private static int wsPort;
 
-    private static final Set<WebSocketClient> wsClients = ConcurrentHashMap.newKeySet();
+    private static final Set<WebSocketClient> wsClients = Collections.synchronizedSet(new HashSet<>());
 
     private static class WebSocketClient {
-        String id;
-        OutputStream out;
+        Socket socket;
         String userId;
         String username;
-        HttpExchange exchange;
+        DataInputStream in;
+        DataOutputStream out;
         
-        WebSocketClient(String id, OutputStream out, HttpExchange exchange) {
-            this.id = id;
-            this.out = out;
-            this.exchange = exchange;
+        WebSocketClient(Socket socket) throws IOException {
+            this.socket = socket;
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
         }
         
         void send(String msg) {
             try {
-                out.write(new byte[]{(byte)0x00});
-                out.write(msg.getBytes("UTF-8"));
-                out.write(new byte[]{(byte)0xFF});
+                String framed = "\u0000" + msg + "\u0000";
+                out.write(framed.getBytes("UTF-8"));
                 out.flush();
             } catch (Exception e) {
                 wsClients.remove(this);
             }
+        }
+        
+        void close() {
+            try { socket.close(); } catch (Exception e) {}
         }
     }
 
@@ -113,29 +117,6 @@ public class Server {
             }
         });
 
-        httpServer.createContext("/ws", exchange -> {
-            try {
-                String wsKey = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
-                
-                if (wsKey != null) {
-                    String acceptKey = createWebSocketKey(wsKey);
-                    exchange.getResponseHeaders().set("Upgrade", "websocket");
-                    exchange.getResponseHeaders().set("Connection", "Upgrade");
-                    exchange.getResponseHeaders().set("Sec-WebSocket-Accept", acceptKey);
-                    exchange.sendResponseHeaders(101, -1);
-                    
-                    WebSocketClient client = new WebSocketClient("ws_" + System.currentTimeMillis(), exchange.getResponseBody(), exchange);
-                    wsClients.add(client);
-                    
-                    clientHandlers.submit(() -> handleWebSocketClient(client, exchange));
-                } else {
-                    exchange.sendResponseHeaders(400, -1);
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
-
         httpServer.createContext("/api/server/start", exchange -> sendJson(exchange, "{\"status\":\"running\",\"port\":" + tcpPort + "}"));
         httpServer.createContext("/api/server/stop", exchange -> sendJson(exchange, "{\"status\":\"stopped\"}"));
         httpServer.createContext("/api/server/status", exchange -> {
@@ -156,7 +137,7 @@ public class Server {
                     }
                 }
             } catch (Exception e) {}
-            sendJson(exchange, "{\"status\":\"running\",\"port\":" + tcpPort + ",\"httpPort\":" + httpPort + ",\"ips\":[" + ips + "]}");
+            sendJson(exchange, "{\"status\":\"running\",\"port\":" + tcpPort + ",\"httpPort\":" + httpPort + ",\"wsPort\":" + wsPort + ",\"ips\":[" + ips + "]}");
         });
         httpServer.createContext("/api/users", exchange -> {
             List<String> users = new ArrayList<>(sessionManager.getUserIds());
@@ -171,22 +152,80 @@ public class Server {
         System.out.println("HTTP Server (web UI) started on port " + port);
     }
 
-    private static void handleWebSocketClient(WebSocketClient client, HttpExchange exchange) {
+    private static void startWebSocketServer(int port) throws IOException {
+        wsServerSocket = new ServerSocket(port);
+        System.out.println("WebSocket Server started on port " + port);
+        
+        clientHandlers.submit(() -> {
+            while (running) {
+                try {
+                    Socket clientSocket = wsServerSocket.accept();
+                    clientHandlers.submit(() -> handleWebSocketConnection(clientSocket));
+                } catch (IOException e) {
+                    if (running) System.err.println("WS accept error: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    private static void handleWebSocketConnection(Socket socket) {
+        WebSocketClient client = null;
         try {
-            Socket socket = (Socket) exchange.getAttribute("socket");
-            if (socket == null) {
-                socket = new Socket();
-                socket.connect(new InetSocketAddress("localhost", httpPort), 1000);
+            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            
+            String line = reader.readLine();
+            if (line == null) {
+                socket.close();
+                return;
             }
             
-            InputStream in = exchange.getRequestBody();
-            byte[] b = new byte[8192];
+            if (!line.startsWith("GET /ws")) {
+                socket.close();
+                return;
+            }
+            
+            Map<String, String> headers = new HashMap<>();
+            String wsKey = null;
+            
+            while (!(line = reader.readLine()).isEmpty()) {
+                int colon = line.indexOf(':');
+                if (colon > 0) {
+                    String key = line.substring(0, colon).trim();
+                    String value = line.substring(colon + 1).trim();
+                    headers.put(key, value);
+                    if (key.equalsIgnoreCase("Sec-WebSocket-Key")) {
+                        wsKey = value;
+                    }
+                }
+            }
+            
+            if (wsKey == null) {
+                socket.close();
+                return;
+            }
+            
+            String acceptKey = createWebSocketKey(wsKey);
+            String response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: " + acceptKey + "\r\n" +
+                "\r\n";
+            
+            socket.getOutputStream().write(response.getBytes("ISO-8859-1"));
+            socket.getOutputStream().flush();
+            
+            client = new WebSocketClient(socket);
+            wsClients.add(client);
+            System.out.println("WebSocket client connected! Total: " + wsClients.size());
+            
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] b = new byte[4096];
             boolean inFrame = false;
             
             while (running && !socket.isClosed()) {
-                if (in.available() > 0) {
-                    int r = in.read(b);
+                int available = socket.getInputStream().available();
+                if (available > 0) {
+                    int r = socket.getInputStream().read(b);
                     if (r == -1) break;
                     
                     for (int i = 0; i < r; i++) {
@@ -196,7 +235,9 @@ public class Server {
                         } else if (byteVal == 0xFF) {
                             if (inFrame) {
                                 String msg = buffer.toString("UTF-8");
-                                if (!msg.isEmpty()) handleWsMessage(client, msg);
+                                if (!msg.isEmpty()) {
+                                    handleWsMessage(client, msg);
+                                }
                                 buffer.reset();
                                 inFrame = false;
                             }
@@ -204,17 +245,23 @@ public class Server {
                             buffer.write(byteVal);
                         }
                     }
+                } else {
+                    Thread.sleep(20);
                 }
-                Thread.sleep(10);
             }
         } catch (Exception e) {
         } finally {
-            wsClients.remove(client);
-            try { exchange.getRequestBody().close(); } catch (Exception e) {}
+            if (client != null) {
+                wsClients.remove(client);
+                System.out.println("WebSocket client removed. Total: " + wsClients.size());
+            }
+            try { socket.close(); } catch (Exception e) {}
         }
     }
 
     private static void handleWsMessage(WebSocketClient client, String message) {
+        System.out.println("WS: " + message);
+        
         if (message.startsWith("JOIN:")) {
             String[] parts = message.split(":", 3);
             if (parts.length >= 3) {
@@ -248,8 +295,8 @@ public class Server {
     }
 
     private static void broadcastWs(String message) {
-        System.out.println("Broadcasting to " + wsClients.size() + " clients: " + message);
-        for (WebSocketClient c : wsClients) {
+        System.out.println("Broadcast WS to " + wsClients.size() + ": " + message.substring(0, Math.min(50, message.length())));
+        for (WebSocketClient c : new HashSet<>(wsClients)) {
             c.send(message);
         }
     }
@@ -271,12 +318,13 @@ public class Server {
     }
 
     public static void start(int port) throws Exception {
-        start(port, port + 100);
+        start(port, port + 100, port + 200);
     }
 
-    public static void start(int tcpPort, int httpPort) throws Exception {
+    public static void start(int tcpPort, int httpPort, int wsPort) throws Exception {
         Server.tcpPort = tcpPort;
         Server.httpPort = httpPort;
+        Server.wsPort = wsPort;
         
         document = new Document("collaborative_doc.txt");
         syncEngine = new SyncEngine(document);
@@ -285,10 +333,11 @@ public class Server {
         try {
             versionController = new VersionController("collab_data.db", "collaborative_doc.txt");
         } catch (Exception e) {
-            System.out.println("Warning: Could not initialize database, continuing without persistence");
+            System.out.println("Warning: Could not initialize database");
         }
 
         startHttpServer(httpPort);
+        startWebSocketServer(wsPort);
 
         serverSocket = new ServerSocket(tcpPort);
         System.out.println("=== TCP Server started on port " + tcpPort + " ===");
@@ -297,22 +346,16 @@ public class Server {
         displayLANAddresses();
         
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                stop();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            try { stop(); } catch (Exception e) { e.printStackTrace(); }
         }));
 
         while (running) {
             try {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("New connection from: " + clientSocket.getInetAddress());
+                System.out.println("New TCP connection from: " + clientSocket.getInetAddress());
                 clientHandlers.submit(new ClientHandler(clientSocket));
             } catch (IOException e) {
-                if (running) {
-                    System.err.println("Error accepting connection: " + e.getMessage());
-                }
+                if (running) System.err.println("Error: " + e.getMessage());
             }
         }
     }
@@ -320,6 +363,7 @@ public class Server {
     public static void stop() throws Exception {
         running = false;
         if (httpServer != null) httpServer.stop(1);
+        if (wsServerSocket != null) wsServerSocket.close();
         if (serverSocket != null) serverSocket.close();
         if (versionController != null) versionController.close();
         clientHandlers.shutdown();
@@ -332,20 +376,15 @@ public class Server {
         private PrintWriter out;
         private BufferedReader in;
 
-        ClientHandler(Socket socket) {
-            this.socket = socket;
-        }
+        ClientHandler(Socket socket) { this.socket = socket; }
 
         @Override
         public void run() {
             try {
                 out = new PrintWriter(socket.getOutputStream(), true);
                 in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
                 String line;
-                while ((line = in.readLine()) != null) {
-                    handleMessage(line);
-                }
+                while ((line = in.readLine()) != null) handleMessage(line);
             } catch (IOException e) {
                 System.out.println("Client disconnected: " + userId);
             } finally {
@@ -354,33 +393,22 @@ public class Server {
         }
 
         private void handleMessage(String message) {
-            if (message.startsWith("JOIN:")) {
-                handleJoin(message);
-            } else if (message.startsWith("EDIT:")) {
-                handleEdit(message);
-            } else if (message.equals("SYNC")) {
-                handleSync();
-            } else if (message.startsWith("ACTIVITY:")) {
-                handleActivity(message);
-            } else if (message.equals("USERS")) {
-                handleUserList();
-            } else if (message.startsWith("SAVE:")) {
-                handleSave(message);
-            } else if (message.startsWith("LOAD:")) {
-                handleLoad(message);
-            } else if (message.startsWith("LEAVE:")) {
-                handleLeave(message);
-            } else if (message.equals("PING")) {
-                out.println("PONG");
-            }
+            if (message.startsWith("JOIN:")) handleJoin(message);
+            else if (message.startsWith("EDIT:")) handleEdit(message);
+            else if (message.equals("SYNC")) handleSync();
+            else if (message.startsWith("ACTIVITY:")) handleActivity(message);
+            else if (message.equals("USERS")) handleUserList();
+            else if (message.startsWith("SAVE:")) handleSave(message);
+            else if (message.startsWith("LOAD:")) handleLoad(message);
+            else if (message.startsWith("LEAVE:")) handleLeave(message);
+            else if (message.equals("PING")) out.println("PONG");
         }
 
         private void handleLeave(String message) {
             String[] parts = message.split(":", 2);
             if (parts.length >= 2) {
-                String leaveUserId = parts[1];
-                System.out.println("User left: " + leaveUserId);
-                cleanupForUser(leaveUserId);
+                System.out.println("User left: " + parts[1]);
+                cleanupForUser(parts[1]);
             }
         }
 
@@ -400,7 +428,7 @@ public class Server {
                     document.addUser(userId);
                     sessionManager.updateActivity(userId, "Joined");
                     out.println("JOIN_OK:" + document.getContent() + ":" + document.getVersion());
-                    System.out.println("User joined: " + username + " (" + userId + ")");
+                    System.out.println("User joined: " + username);
                 } else {
                     out.println("JOIN_FAIL:Session limit reached");
                 }
@@ -410,27 +438,18 @@ public class Server {
         private void handleEdit(String message) {
             String[] parts = message.split(":", 5);
             if (parts.length >= 5) {
-                String userId = parts[1];
+                String uid = parts[1];
                 int version = Integer.parseInt(parts[2]);
                 String type = parts[3];
                 int position = Integer.parseInt(parts[4]);
                 String text = parts.length > 5 ? parts[5] : "";
-
-                EditOperation.OpType opType = EditOperation.OpType.valueOf(type);
-                EditOperation operation = new EditOperation(userId, opType, position, text, version);
-                
-                String result = syncEngine.processOperation(operation);
-                sessionManager.updateActivity(userId, "Editing");
-                
                 try {
-                    if (versionController != null) {
-                        versionController.saveVersion(document, userId);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Version save error: " + e.getMessage());
-                }
-
-                broadcast("EDIT_OK:" + result + ":" + document.getVersion() + ":" + userId);
+                    EditOperation.OpType opType = EditOperation.OpType.valueOf(type);
+                    EditOperation operation = new EditOperation(uid, opType, position, text, version);
+                    String result = syncEngine.processOperation(operation);
+                    if (versionController != null) versionController.saveVersion(document, uid);
+                    broadcast("EDIT_OK:" + result + ":" + document.getVersion() + ":" + uid);
+                } catch (Exception e) { e.printStackTrace(); }
             }
         }
 
@@ -441,14 +460,11 @@ public class Server {
 
         private void handleActivity(String message) {
             String[] parts = message.split(":", 2);
-            if (parts.length >= 2 && userId != null) {
-                sessionManager.updateActivity(userId, parts[1]);
-            }
+            if (parts.length >= 2 && userId != null) sessionManager.updateActivity(userId, parts[1]);
         }
 
         private void handleUserList() {
-            List<String> users = new ArrayList<>(sessionManager.getUserIds());
-            out.println("USERS_OK:" + String.join(",", users));
+            out.println("USERS_OK:" + String.join(",", sessionManager.getUserIds()));
         }
 
         private void handleSave(String message) {
@@ -456,9 +472,7 @@ public class Server {
             try {
                 document.saveToFile(new File(fileName));
                 broadcast("SAVE_OK:" + fileName);
-            } catch (IOException e) {
-                out.println("SAVE_FAIL:" + e.getMessage());
-            }
+            } catch (IOException e) { out.println("SAVE_FAIL:" + e.getMessage()); }
         }
 
         private void handleLoad(String message) {
@@ -467,18 +481,15 @@ public class Server {
                 document.loadFromFile(new File(fileName));
                 syncEngine = new SyncEngine(document);
                 broadcast("LOAD_OK:" + document.getContent());
-            } catch (IOException e) {
-                out.println("LOAD_FAIL:" + e.getMessage());
-            }
+            } catch (IOException e) { out.println("LOAD_FAIL:" + e.getMessage()); }
         }
 
         private void broadcast(String message) {
             for (String uid : sessionManager.getUserIds()) {
                 PrintWriter pw = sessionManager.getClientOutput(uid);
-                if (pw != null) {
-                    pw.println(message);
-                }
+                if (pw != null) pw.println(message);
             }
+            broadcastWs(message);
         }
 
         private void cleanup() {
@@ -486,9 +497,7 @@ public class Server {
                 document.removeUser(userId);
                 sessionManager.removeSession(userId);
             }
-            try {
-                socket.close();
-            } catch (IOException e) {}
+            try { socket.close(); } catch (IOException e) {}
         }
     }
 }
