@@ -5,91 +5,31 @@ let serverIP = null;
 let serverPort = null;
 let lastContent = '';
 let version = 0;
-let reconnectAttempts = 0;
-const MAX_RECONNECT = 5;
+let isConnected = false;
 
 function showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(screenId).classList.add('active');
 }
 
-function showLanding() { showScreen('landing-screen'); }
-function showServerPanel() {
-    showScreen('server-panel');
-    fetchLANIPs();
-}
-function showJoinPanel() { showScreen('join-panel'); }
+function showJoin() { showScreen('join-screen'); }
 function showEditor() { showScreen('editor-screen'); }
 
-async function fetchLANIPs() {
-    try {
-        const response = await fetch('/api/server/status');
-        const data = await response.json();
-        const ipsList = document.getElementById('ips-list');
-        ipsList.innerHTML = '';
-        if (data.ips && data.ips.length > 0) {
-            data.ips.forEach(ip => {
-                const div = document.createElement('div');
-                div.className = 'ip-item';
-                div.innerHTML = `<span>${ip}</span><button class="copy-btn" onclick="copyIP('${ip}')">Copy</button>`;
-                ipsList.appendChild(div);
-            });
-        } else {
-            ipsList.innerHTML = '<p style="color: var(--text-muted);">Detecting...</p>';
-        }
-    } catch (e) {
-        document.getElementById('ips-list').innerHTML = '<p style="color: var(--text-muted);">Could not detect IPs</p>';
-    }
-}
-
-function copyIP(ip) {
-    navigator.clipboard.writeText(ip);
-    const btn = event.target;
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = 'Copy', 1500);
-}
-
-async function startServer() {
-    const port = document.getElementById('server-port').value;
-    const statusEl = document.getElementById('server-status');
-    try {
-        const response = await fetch('/api/server/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        statusEl.textContent = `Server started on port ${port}`;
-        statusEl.className = 'status success';
-        setTimeout(() => {
-            serverPort = port;
-            showEditor();
-        }, 500);
-    } catch (e) {
-        statusEl.textContent = 'Failed to start server';
-        statusEl.className = 'status error';
-    }
-}
-
-function joinServer() {
-    serverIP = document.getElementById('join-ip').value;
-    serverPort = document.getElementById('join-port').value;
-    username = document.getElementById('username').value;
+function connectToServer() {
+    serverIP = document.getElementById('join-ip').value.trim();
+    serverPort = document.getElementById('join-port').value.trim();
+    username = document.getElementById('username').value.trim();
     const statusEl = document.getElementById('join-status');
+    const errorEl = document.getElementById('connection-error');
+    errorEl.style.display = 'none';
     
     if (!serverIP || !username) {
-        statusEl.textContent = 'Please fill all fields';
-        statusEl.className = 'status error';
-        return;
-    }
-    
-    if (reconnectAttempts >= MAX_RECONNECT) {
-        statusEl.textContent = 'Max reconnection attempts reached';
-        statusEl.className = 'status error';
+        errorEl.textContent = 'Please fill all fields';
+        errorEl.style.display = 'block';
         return;
     }
     
     statusEl.textContent = 'Connecting...';
-    reconnectAttempts++;
     
     userId = 'user_' + Math.random().toString(36).substr(2, 9);
     
@@ -102,48 +42,40 @@ function joinServer() {
         socket.onopen = () => {
             console.log('Connected!');
             statusEl.textContent = 'Connected!';
-            statusEl.className = 'status success';
+            isConnected = true;
             document.querySelector('.status-dot').style.background = '#22c55e';
             document.getElementById('connection-text').textContent = `Connected to ${serverIP}:${serverPort}`;
-            reconnectAttempts = 0;
             
-            send('\u0000JOIN:' + userId + ':' + username + '\u0000');
+            socket.send('\u0000JOIN:' + userId + ':' + username + '\u0000');
             showEditor();
         };
         
         socket.onmessage = (event) => {
-            const data = event.data;
-            console.log('Received:', data);
-            handleMessage(data);
+            console.log('Received:', event.data);
+            handleMessage(event.data);
         };
         
         socket.onclose = (event) => {
-            console.log('Closed:', event.code);
+            console.log('Closed:', event.code, event.reason);
+            isConnected = false;
             document.querySelector('.status-dot').style.background = '#ef4444';
             document.getElementById('connection-text').textContent = 'Disconnected';
             
-            if (reconnectAttempts < MAX_RECONNECT) {
-                setTimeout(() => {
-                    statusEl.textContent = `Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT})`;
-                    joinServer();
-                }, 3000);
+            if (event.code !== 1000 && event.code !== -1) {
+                statusEl.textContent = 'Connection lost. Refresh to reconnect.';
             }
         };
         
         socket.onerror = (error) => {
             console.error('Error:', error);
             statusEl.textContent = 'Connection failed';
-            statusEl.className = 'status error';
+            errorEl.textContent = 'Cannot connect to server. Make sure the server is running.';
+            errorEl.style.display = 'block';
         };
     } catch (e) {
         statusEl.textContent = 'Error: ' + e.message;
-        statusEl.className = 'status error';
-    }
-}
-
-function send(msg) {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send('\u0000' + msg + '\u0000');
+        errorEl.textContent = e.message;
+        errorEl.style.display = 'block';
     }
 }
 
@@ -156,9 +88,7 @@ function handleMessage(message) {
             lastContent = parts[0];
             version = parseInt(parts[1]);
             const editor = document.getElementById('code-editor');
-            if (editor) {
-                editor.value = lastContent;
-            }
+            if (editor) editor.value = lastContent;
             updateVersion();
             updateCharCount();
         }
@@ -167,47 +97,27 @@ function handleMessage(message) {
         if (parts.length >= 3) {
             const content = parts[0];
             const newVersion = parseInt(parts[1]);
-            const editingUser = parts[2];
             
             if (content !== lastContent) {
                 lastContent = content;
                 version = newVersion;
-                
                 const editor = document.getElementById('code-editor');
-                if (editor) {
-                    editor.value = content;
-                }
+                if (editor) editor.value = content;
                 updateVersion();
                 updateCharCount();
             }
-        }
-    } else if (message.startsWith('SYNC_OK:')) {
-        const parts = message.split(':');
-        if (parts.length >= 3) {
-            lastContent = parts[0];
-            version = parseInt(parts[1]);
-            const editor = document.getElementById('code-editor');
-            if (editor) editor.value = lastContent;
-            updateVersion();
-            updateCharCount();
-        }
-    } else if (message.startsWith('USERS_OK:')) {
-        const users = message.split(':')[1].split(',').filter(u => u);
-        const usersList = document.getElementById('users-list');
-        if (usersList) {
-            usersList.innerHTML = users.map(u => `<span class="user-badge">${u}</span>`).join('');
         }
     }
 }
 
 function updateVersion() {
-    const versionEl = document.getElementById('version-info');
-    if (versionEl) versionEl.textContent = `Version: ${version}`;
+    const el = document.getElementById('version-info');
+    if (el) el.textContent = `Version: ${version}`;
 }
 
 function updateCharCount() {
-    const charEl = document.getElementById('char-count');
-    if (charEl) charEl.textContent = `Characters: ${lastContent.length}`;
+    const el = document.getElementById('char-count');
+    if (el) el.textContent = `Characters: ${lastContent.length}`;
 }
 
 const editor = document.getElementById('code-editor');
@@ -240,23 +150,27 @@ function handleTextChange(oldText, newText) {
     const deleted = oldText.substring(commonPrefix, oldText.length - commonSuffix);
     const inserted = newText.substring(commonPrefix, newText.length - commonSuffix);
     
-    if (deleted) send('EDIT:' + userId + ':' + version + ':DELETE:' + commonPrefix + ':' + deleted);
-    if (inserted) send('EDIT:' + userId + ':' + version + ':INSERT:' + commonPrefix + ':' + inserted);
+    if (deleted) socket.send('\u0000EDIT:' + userId + ':' + version + ':DELETE:' + commonPrefix + ':' + deleted + '\u0000');
+    if (inserted) socket.send('\u0000EDIT:' + userId + ':' + version + ':INSERT:' + commonPrefix + ':' + inserted + '\u0000');
 }
 
 function leaveSession() {
-    reconnectAttempts = MAX_RECONNECT;
     if (socket) socket.close();
     socket = null;
     userId = null;
     username = null;
     lastContent = '';
     version = 0;
-    showLanding();
+    isConnected = false;
+    showJoin();
 }
+
+window.addEventListener('load', () => {
+    showJoin();
+});
 
 setInterval(() => {
     if (socket && socket.readyState === WebSocket.OPEN) {
-        send('PING');
+        socket.send('\u0000PING\u0000');
     }
 }, 10000);
