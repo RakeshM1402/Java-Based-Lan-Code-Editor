@@ -3,22 +3,19 @@ let userId = null;
 let lastContent = '';
 let version = 0;
 
-const editorIP = window.location.hostname;
-const editorPort = 5200;
-
-function showScreen(screenId) {
-    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(screenId).classList.add('screen ' + screenId);
-}
-
-function showJoin() { showScreen('join-screen'); }
-function showEditor() { showScreen('editor-screen'); }
-
 window.addEventListener('load', () => {
-    document.getElementById('join-ip').value = editorIP;
-    document.getElementById('join-port').value = editorPort;
     showJoin();
 });
+
+function showJoin() {
+    document.getElementById('join-screen').classList.add('active');
+    document.getElementById('editor-screen').classList.remove('active');
+}
+
+function showEditor() {
+    document.getElementById('join-screen').classList.remove('active');
+    document.getElementById('editor-screen').classList.add('active');
+}
 
 function connectToServer() {
     const serverIP = document.getElementById('join-ip').value.trim();
@@ -35,7 +32,6 @@ function connectToServer() {
     }
     
     statusEl.textContent = 'Connecting...';
-    
     userId = 'user_' + Math.random().toString(36).substr(2, 9);
     
     try {
@@ -55,12 +51,12 @@ function connectToServer() {
         socket.onclose = () => {
             document.querySelector('.status-dot').style.background = '#ef4444';
             document.getElementById('connection-text').textContent = 'Disconnected';
-            statusEl.textContent = 'Connection lost. Refresh to reconnect.';
+            statusEl.textContent = 'Connection lost';
         };
         
-        socket.onerror = () => {
+        socket.onerror = (e) => {
             statusEl.textContent = 'Connection failed';
-            errorEl.textContent = 'Cannot connect. Make sure server is running.';
+            errorEl.textContent = 'Cannot connect to server';
             errorEl.style.display = 'block';
         };
     } catch (e) {
@@ -117,15 +113,11 @@ function handleTextChange(oldText, newText) {
     
     let commonPrefix = 0;
     const minLen = Math.min(oldText.length, newText.length);
-    while (commonPrefix < minLen && oldText[commonPrefix] === newText[commonPrefix]) {
-        commonPrefix++;
-    }
+    while (commonPrefix < minLen && oldText[commonPrefix] === newText[commonPrefix]) commonPrefix++;
     
     let commonSuffix = 0;
     while (commonSuffix < minLen - commonPrefix && 
-           oldText[oldText.length - 1 - commonSuffix] === newText[newText.length - 1 - commonSuffix]) {
-        commonSuffix++;
-    }
+           oldText[oldText.length - 1 - commonSuffix] === newText[newText.length - 1 - commonSuffix]) commonSuffix++;
     
     const deleted = oldText.substring(commonPrefix, oldText.length - commonSuffix);
     const inserted = newText.substring(commonPrefix, newText.length - commonSuffix);
@@ -137,9 +129,6 @@ function handleTextChange(oldText, newText) {
 function leaveSession() {
     if (socket) socket.close();
     socket = null;
-    userId = null;
-    lastContent = '';
-    version = 0;
     showJoin();
 }
 
