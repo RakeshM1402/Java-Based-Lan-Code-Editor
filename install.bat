@@ -18,12 +18,24 @@ if %ERRORLEVEL% NEQ 0 (
 echo [OK] Java found
 echo.
 
-:: Download Maven Wrapper
-echo [SETUP] Downloading Maven Wrapper...
-if not exist ".mvn\wrapper\" mkdir ".mvn\wrapper"
-if not exist ".mvn\wrapper\maven-wrapper.jar" (
-    powershell -Command "Invoke-WebRequest -Uri 'https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar' -OutFile '.mvn\wrapper\maven-wrapper.jar'" 2>nul
+:: Create Maven wrapper directory
+echo [SETUP] Setting up Maven Wrapper...
+if not exist ".mvn\wrapper" mkdir ".mvn\wrapper"
+
+:: Download Maven Wrapper JAR
+set WRAPPER_URL=https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar
+set WRAPPER_JAR=.mvn\wrapper\maven-wrapper.jar
+
+if not exist "%WRAPPER_JAR%" (
+    echo Downloading maven-wrapper.jar...
+    powershell -Command "Invoke-WebRequest -Uri '%WRAPPER_URL%' -OutFile '%WRAPPER_JAR%'"
+    if %ERRORLEVEL% NEQ 0 (
+        echo [ERROR] Failed to download Maven Wrapper
+        pause
+        exit /b 1
+    )
 )
+echo [OK] Maven Wrapper ready
 
 :: Build project
 echo.
@@ -45,6 +57,9 @@ if %ERRORLEVEL% EQU 0 (
 ) else (
     echo.
     echo [ERROR] Build failed. Check output above.
+    echo.
+    echo Trying to see full error...
+    call mvnw.cmd clean package
     pause
     exit /b 1
 )
