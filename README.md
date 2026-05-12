@@ -1,176 +1,174 @@
-# Collaborative Code Editor - LAN Edition
+# <span style="background: linear-gradient(135deg, #8b5cf6, #06b6d4, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">CodeSync</span>
 
-Real-time collaborative code editor for Local Area Network (LAN) collaboration.
+### Real-time Collaborative Code Editor for LAN
 
-![Java](https://img.shields.io/badge/Java-17+-blue)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Mac-blue)
-
-## Features
-
-- **Real-time Collaboration** - Multiple users can edit simultaneously
-- **Modern Web Interface** - Beautiful glassmorphism UI in your browser
-- **Cross-Platform** - Works on Windows, Linux, and Mac
-- **No Setup Required** - One-click installation
-- **LAN Ready** - Share your server IP with friends on the same network
+<p align="center">
+  <img src="https://img.shields.io/badge/Java-17+-blue?style=for-the-badge" alt="Java">
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Mac-blue?style=for-the-badge" alt="Platform">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License">
+</p>
 
 ---
 
-## Quick Start
+## ⚡ Get Started in 3 Steps
 
-### 1. One-Command Setup
+### Step 1: Download & Extract
 
-**Windows:**
+```bash
+git clone https://github.com/RakeshM1402/Java-Based-Lan-Code-Editor.git
+cd Java-Based-Lan-Code-Editor
+```
+
+### Step 2: One-Click Install
+
+**Windows** — Double-click or run in cmd:
 ```cmd
 install.bat
 ```
 
-**Linux/Mac:**
+**Linux / Mac**:
 ```bash
 bash install.sh
 ```
 
-This automatically:
-- Checks for Java 17
-- Downloads Maven (if needed)
-- Builds the project with all dependencies
+> This automatically checks for Java 17, downloads Maven, and builds the project.
 
-### 2. Start the Server
+### Step 3: Start Collaborating
 
 ```bash
-cd target
-java -jar CollaborativeEditor.jar server 5000
+# Run the server
+java -jar target\CollaborativeEditor.jar server 5000
 ```
 
-You'll see output like:
-```
-=== Server started on port 5000 ===
-Available LAN addresses:
-  192.168.1.100 (Wi-Fi)
-  10.0.0.1 (Ethernet)
-```
-
-### 3. Access Web UI
-
-Open your browser and go to:
+Open in browser:
 ```
 http://localhost:5100
 ```
 
-Or from another device on your network:
-```
-http://192.168.1.100:5100
-```
+---
 
-### 4. Connect Clients
+## 🎨 Features
 
-On another device, run:
+| Feature | Description |
+|---------|-------------|
+| 🌐 **Web Interface** | Modern glassmorphism UI in your browser |
+| ⚡ **Real-time Sync** | See edits instantly as others type |
+| 🔒 **LAN Ready** | Works without internet — just same network |
+| 🎯 **Zero Config** | One script does everything |
+| 📱 **Cross-Platform** | Windows, Linux, Mac support |
+
+---
+
+## 📱 How to Connect Friends
+
+### 1️⃣ Start Server
 ```bash
-java -jar CollaborativeEditor.jar client 192.168.1.100 5000 MyName
+java -jar target\CollaborativeEditor.jar server 5000
+```
+
+You'll see available IPs:
+```
+=== Server started on port 5000 ===
+Available LAN addresses:
+  192.168.1.100 (Wi-Fi)
+```
+
+### 2️⃣ Share Your IP
+Pick the IP shown and share it with friends.
+
+### 3️⃣ Friends Join
+```bash
+java -jar CollaborativeEditor.jar client 192.168.1.100 5000 FriendName
 ```
 
 ---
 
-## Project Structure
+## 🗂️ Project Structure
 
 ```
+Java-Based-Lan-Code-Editor/
 ├── src/main/
 │   ├── java/com/collab/
-│   │   ├── server/    # Server & HTTP server
-│   │   ├── client/    # Client connection
-│   │   ├── ui/        # Swing UI components
-│   │   ├── core/      # Document, Edit operations
-│   │   ├── sync/      # Sync engine & conflict resolver
-│   │   ├── session/   # Session management
-│   │   └── persistence/ # SQLite database
-│   └── resources/web/  # Web UI (HTML/CSS/JS)
-├── install.bat         # Windows setup script
-├── install.sh          # Linux/Mac setup script
-├── mvnw/mvnw.cmd      # Maven wrapper
-└── pom.xml             # Maven configuration
+│   │   ├── server/         # TCP + HTTP server
+│   │   ├── client/         # Client connection
+│   │   ├── ui/            # Swing editor panel
+│   │   ├── core/          # Document & operations
+│   │   ├── sync/          # Sync engine
+│   │   ├── session/       # User sessions
+│   │   └── persistence/   # SQLite storage
+│   └── resources/web/      # Web UI
+│       ├── index.html      # Main app
+│       ├── css/styles.css  # Glassmorphism styling
+│       └── js/app.js       # Client logic
+│
+├── install.bat            # Windows setup
+├── install.sh             # Linux/Mac setup
+├── mvnw / mvnw.cmd       # Maven wrapper
+├── pom.xml               # Dependencies
+└── README.md             # You are here
 ```
 
 ---
 
-## How It Works
+## 🔧 Manual Build (Optional)
+
+If you prefer not to use the install scripts:
+
+```bash
+# Install Maven (https://maven.apache.org/install.html)
+mvn clean package
+
+# Or use Maven wrapper (no Maven install needed)
+./mvnw clean package     # Linux/Mac
+mvnw.cmd clean package  # Windows
+```
+
+---
+
+## ❓ Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `Java not found` | Install Java 17 from [adoptium.net](https://adoptium.net/) |
+| Can't connect | Ensure both devices on same network, check firewall |
+| Web UI won't load | Use port **5100**, not 5000 |
+| Build fails | Delete `target/` folder and run `mvnw.cmd clean package` |
+
+---
+
+## 📖 For Developers
 
 ### Architecture
 
-| Component | Port | Description |
-|-----------|------|-------------|
-| TCP Server | 5000 | Handles client connections, real-time sync |
-| HTTP Server | 5100 | Serves web UI dashboard |
-
-### Communication Flow
-
 ```
-Client <--TCP--> Server (port 5000)
-Browser <--HTTP--> HTTP Server (port 5100)
+┌─────────────────────────────────────────────────────┐
+│                     Browser                          │
+│            http://localhost:5100                     │
+└─────────────────────┬───────────────────────────────┘
+                      │ HTTP
+┌─────────────────────▼───────────────────────────────┐
+│                 HTTP Server (5100)                  │
+│              Serves Web UI + API                    │
+└─────────────────────┬───────────────────────────────┘
+                      │ TCP Sockets
+┌─────────────────────▼───────────────────────────────┐
+│                 TCP Server (5000)                    │
+│            Handles Collaboration                     │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### Message Protocol
 
-| Message | Format | Description |
-|---------|--------|-------------|
-| JOIN | `JOIN:userId:username` | Connect to server |
-| EDIT | `EDIT:userId:version:type:pos:text` | Send edit operation |
-| LEAVE | `LEAVE:userId` | Disconnect from server |
-| PING/PONG | Heartbeat | Keep connection alive |
+| Message | Format | Purpose |
+|---------|--------|---------|
+| JOIN | `JOIN:userId:username` | Connect |
+| EDIT | `EDIT:userId:version:type:pos:text` | Edit document |
+| SYNC | `SYNC` | Request full document |
+| LEAVE | `LEAVE:userId` | Disconnect |
+| PING/PONG | — | Keep connection alive |
 
 ---
 
-## Requirements
-
-- **Java 17** or higher
-- **Internet connection** (for first-time setup only)
-
----
-
-## Troubleshooting
-
-### "Java not found" error
-Install Java 17 from [Adoptium](https://adoptium.net/) or [Oracle](https://www.oracle.com/java/technologies/downloads/)
-
-### Can't connect to server
-1. Make sure server is running
-2. Check firewall allows connection on port 5000
-3. Ensure both devices are on the same network
-
-### Web UI not loading
-- Server HTTP is on port 5100, not 5000
-- Check if port 5100 is blocked by firewall
-
-### Build fails
-1. Delete `target` folder
-2. Run `mvnw.cmd clean install` (Windows) or `./mvnw clean install` (Linux/Mac)
-3. Check for Java 17: `java -version`
-
----
-
-## For Developers
-
-### Build Commands
-
-```bash
-# Standard Maven build
-mvn clean package
-
-# Or use Maven wrapper (no Maven install needed)
-./mvnw clean package   # Linux/Mac
-mvnw.cmd clean package # Windows
-
-# Skip tests
-mvn clean package -DskipTests
-```
-
-### Port Configuration
-
-Edit `Server.java` to change default ports:
-```java
-Server.start(5000, 5100);  // TCP port, HTTP port
-```
-
----
-
-## License
-
-MIT License - Free to use, modify, and distribute.
+<p align="center" style="margin-top: 40px; opacity: 0.6;">
+Built with ☕ and 🎨 — Free to use under MIT License
+</p>
